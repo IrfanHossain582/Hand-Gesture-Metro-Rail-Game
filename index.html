@@ -2,21 +2,35 @@
 <html lang="bn">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>Metro Runner Dhaka | ঢাকা মেট্রোরেল রানার</title>
+  <meta name="description" content="Run the Dhaka Metro viaducts in a fast 3D endless runner. Dodge trains, collect coins, and play with keyboard or hand gestures.">
+  <meta name="theme-color" content="#0b1120">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Metro Runner Dhaka">
+  <meta property="og:description" content="Run the Dhaka Metro viaducts, dodge trains, and collect coins in this 3D endless runner.">
+  <meta property="og:image" content="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='96' fill='%23006a4e'/%3E%3Ctext x='50%25' y='58%25' text-anchor='middle' font-size='290'%3E🚇%3C/text%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23006a4e'/%3E%3Ctext x='50%25' y='53%25' text-anchor='middle' dominant-baseline='middle' font-size='40'%3E🚇%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="style.css">
 
-  <!-- Pinned Three.js CDN -->
+  <!-- Exact versions keep static deployments reproducible. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-
-  <!-- MediaPipe Hands CDN for Camera Gesture Control -->
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
 </head>
 <body>
 
   <!-- Three.js 3D WebGL Canvas -->
   <canvas id="game-canvas"></canvas>
+
+  <div id="loading-screen" role="status" aria-live="polite">
+    <div class="loading-card">
+      <div class="loading-title">🚇 Metro Runner Dhaka</div>
+      <div id="loading-message">Preparing the metro viaduct...</div>
+      <div class="loading-track"><div id="loading-progress"></div></div>
+      <div id="loading-error" hidden></div>
+    </div>
+  </div>
 
   <!-- In-Game HUD (Heads-Up Display) -->
   <div id="hud">
@@ -65,6 +79,7 @@
         <button id="btn-hud-practice" class="hud-btn" title="Practice Camera Mode (ক্যামেরা প্র্যাকটিস মোড)">🎮</button>
         <button id="btn-camera-toggle" class="hud-btn" title="Toggle Camera Gesture Control (হাতের ইশারা নিয়ন্ত্রণ)">📷</button>
         <button id="btn-sound-toggle" class="hud-btn" title="Toggle Audio (সাউন্ড অন/অফ)">🔊</button>
+        <button id="btn-settings-toggle" class="hud-btn" title="Game settings">⚙️</button>
         <button id="btn-pause-toggle" class="hud-btn" title="Pause Game (P / Esc)">⏸️</button>
       </div>
     </div>
@@ -75,14 +90,14 @@
       <div class="station-name-bn" id="station-name-bn">উত্তরা উত্তর</div>
       <div class="station-name-en" id="station-name-en">Uttara North</div>
     </div>
+    <div id="train-warning" class="train-warning-banner" role="status" aria-live="polite"></div>
+    <div id="powerup-hud" aria-live="polite"></div>
 
     <!-- Bottom Controls Hint -->
     <div class="hud-bottom-bar">
       <div class="controls-hint">
-        <span><kbd>A</kbd> / <kbd>D</kbd> or <kbd>←</kbd> <kbd>→</kbd> : লেন বদলান (Change Lane)</span>
-        <span><kbd>W</kbd> / <kbd>↑</kbd> / <kbd>Space</kbd> : লাফ (Jump)</span>
-        <span><kbd>S</kbd> / <kbd>↓</kbd> : স্লাইড (Slide)</span>
-        <span><kbd>P</kbd> : বিরতি (Pause)</span>
+        <span class="desktop-controls-hint"><kbd>A</kbd> / <kbd>D</kbd> or <kbd>←</kbd> <kbd>→</kbd> : Change lane • <kbd>W</kbd> / <kbd>↑</kbd> / <kbd>Space</kbd> : Jump • <kbd>S</kbd> / <kbd>↓</kbd> : Slide • <kbd>P</kbd> : Pause</span>
+        <span class="touch-controls-hint">Swipe to play • ← → change lane • ↑ jump • ↓ slide</span>
       </div>
     </div>
   </div>
@@ -322,12 +337,46 @@
           <div class="go-stat-title">দূরত্ব / Distance</div>
           <div class="go-stat-num" id="go-distance">0 m</div>
         </div>
+        <div class="go-stat-card">
+          <div class="go-stat-title">Power-Ups</div>
+          <div class="go-stat-num" id="go-powerups">0</div>
+        </div>
       </div>
 
+      <button id="btn-share-score" class="btn-secondary">📤 Share Score</button>
+      <p id="share-status" class="share-status" role="status" aria-live="polite"></p>
       <button id="btn-play-again" class="btn-primary">
         <span>আবার খেলুন / PLAY AGAIN</span>
         <span>🔄</span>
       </button>
+    </div>
+  </div>
+
+  <div id="settings-screen" class="screen-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div class="modal-card settings-card">
+      <h2 id="settings-title" class="game-title-en">SETTINGS</h2>
+      <label class="settings-row" for="settings-sound">
+        <span>Sound / সাউন্ড</span>
+        <input id="settings-sound" type="checkbox" checked>
+      </label>
+      <label class="settings-row" for="settings-quality">
+        <span>Graphics quality</span>
+        <select id="settings-quality">
+          <option value="AUTO">Auto</option>
+          <option value="LOW">Low</option>
+          <option value="HIGH">High</option>
+        </select>
+      </label>
+      <label class="settings-row" for="settings-control-mode">
+        <span>Preferred input</span>
+        <select id="settings-control-mode">
+          <option value="touch">Touch</option>
+          <option value="keyboard">Keyboard</option>
+          <option value="camera">Camera</option>
+        </select>
+      </label>
+      <p id="settings-control-note" class="settings-note">Preferred input only; keyboard, touch and camera controls remain available.</p>
+      <button id="btn-settings-close" class="btn-primary">Done</button>
     </div>
   </div>
 

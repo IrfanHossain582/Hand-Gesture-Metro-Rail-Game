@@ -18,6 +18,9 @@ const CONFIG = {
   TRACK_SEGMENT_LENGTH: 50.0,       // Length of each pooled viaduct segment
   VISIBLE_TRACK_SEGMENTS: 7,        // Number of continuous track chunks rendered
   VIADUCT_ELEVATION: 6.0,           // Height of tracks above street level
+  OBSTACLE_SPAWN_LOOKAHEAD: 220.0,  // Keep hazards far enough ahead to react at top speed
+  INITIAL_OBSTACLE_SPAWN_DIST: 220.0,
+  DAY_CYCLE_DISTANCE: 4200.0,        // Full morning-to-night transition repeats by traveled distance
 
   // Speeds & Acceleration
   START_SPEED: 24.0,                // Initial forward speed (m/s)
@@ -25,6 +28,38 @@ const CONFIG = {
   SPEED_ACCELERATION: 0.0018,       // Gradual acceleration rate per second (~+2% per 10s)
   LANE_CHANGE_SPEED: 14.0,          // Interpolation speed for lane changing
   TRAIN_SPEED_RELATIVE: 18.0,       // Oncoming speed of Dhaka MRT trains (m/s)
+  TRAIN_WARNING_TIME: 3.0,          // Minimum warning lead time before train contact
+  TRAIN_COLLISION_LEAD: 8.5,        // Train nose reaches the player before its center
+  TRAIN_MIN_GAP_SECONDS: 1.5,       // Avoid closely spaced train encounters
+  TRAFFIC_LENGTH: 350.0,             // Recycled street-life loop length
+  POWERUPS: {
+    SPAWN_MIN_SECONDS: 20,
+    SPAWN_MAX_SECONDS: 30,
+    SPAWN_DISTANCE: 110,
+    POOL_SIZE: 8,
+    FLY_DURATION: 8,
+    FLY_HEIGHT: 8,
+    FLY_LANDING_SECONDS: 1.8,
+    FLY_LANDING_CLEARANCE: 55,
+    DASH_DURATION: 6,
+    DASH_SPEED_MULTIPLIER: 1.6,
+    DASH_RECOVERY_SECONDS: 1.5,
+    DASH_SCORE_BONUS: 2,
+    MAGNET_DURATION: 10,
+    MAGNET_RANGE: 26,
+    MAGNET_STRENGTH: 4,
+    SHIELD_DURATION: 12,
+    SCORE_X2_DURATION: 15
+  },
+  QUALITY_FPS_THRESHOLD: 40,
+  QUALITY_FPS_DROP_SECONDS: 3,
+  QUALITY_FPS_RECOVERY_THRESHOLD: 52,
+  QUALITY_FPS_RECOVERY_SECONDS: 8,
+  GAMEOVER_SLOWMO_SECONDS: 0.65,
+  HAPTICS_ENABLED: true,
+  HAPTIC_COIN_MS: 12,
+  HAPTIC_POWERUP_MS: 32,
+  HAPTIC_CRASH_PATTERN: [80, 35, 110],
 
   // Player Physics & Timers
   JUMP_FORCE: 14.8,                 // Initial upward velocity
@@ -46,6 +81,9 @@ const CONFIG = {
   // Hand Gesture Control (MediaPipe)
   GESTURE_COOLDOWN_MS: 220,         // Prevent accidental retriggers while changing finger poses
   MEDIAPIPE_INTERVAL_MS: 50,        // MediaPipe runs at ~20 FPS to free CPU for game
+  SWIPE_MIN_DISTANCE_PX: 48,        // Minimum swipe length for a touch action
+  SWIPE_FAST_DISTANCE_PX: 30,       // Shorter swipe accepted when completed quickly
+  SWIPE_FAST_DURATION_MS: 220,      // Fast-swipe window in milliseconds
 
   // Visual Colors (MRT Line-6 Theme)
   COLORS: {
@@ -289,6 +327,43 @@ class AudioController {
     noiseGain.connect(this.ctx.destination);
     noise.start(now);
   }
+
+  playPowerUp() {
+    if (this.isMuted || !this.ctx) return;
+    this.ensureContext();
+    const now = this.ctx.currentTime;
+    [523.25, 783.99, 1046.5].forEach((frequency, index) => {
+      const start = now + index * 0.055;
+      const oscillator = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(frequency, start);
+      gain.gain.setValueAtTime(0.001, start);
+      gain.gain.linearRampToValueAtTime(0.12, start + 0.025);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + 0.22);
+      oscillator.connect(gain);
+      gain.connect(this.ctx.destination);
+      oscillator.start(start);
+      oscillator.stop(start + 0.23);
+    });
+  }
+
+  playPowerUpEnd() {
+    if (this.isMuted || !this.ctx) return;
+    this.ensureContext();
+    const now = this.ctx.currentTime;
+    const oscillator = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    oscillator.type = 'triangle';
+    oscillator.frequency.setValueAtTime(660, now);
+    oscillator.frequency.exponentialRampToValueAtTime(260, now + 0.28);
+    gain.gain.setValueAtTime(0.12, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+    oscillator.connect(gain);
+    gain.connect(this.ctx.destination);
+    oscillator.start(now);
+    oscillator.stop(now + 0.31);
+  }
 }
 
 
@@ -415,6 +490,94 @@ class AssetGenerator {
     });
 
     const texture = new THREE.CanvasTexture(canvas);
+    return texture;
+  }
+
+  static createBuildingFacadeTexture(wallColor, accentColor) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 512;
+    const ctx = canvas.getContext('2d');
+
+    ctx.fillStyle = wallColor;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const wallShade = ctx.createLinearGradient(0, 0, canvas.width, 0);
+    wallShade.addColorStop(0, 'rgba(0,0,0,0.16)');
+    wallShade.addColorStop(0.48, 'rgba(255,255,255,0.08)');
+    wallShade.addColorStop(1, 'rgba(0,0,0,0.24)');
+    ctx.fillStyle = wallShade;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.fillStyle = accentColor;
+    ctx.fillRect(0, 0, canvas.width, 18);
+    ctx.fillRect(0, canvas.height - 24, canvas.width, 24);
+
+    for (let row = 0; row < 10; row++) {
+      const y = 36 + row * 45;
+      for (let column = 0; column < 5; column++) {
+        const x = 16 + column * 48;
+        const lit = Math.random() < 0.14;
+        ctx.fillStyle = lit ? '#ffe6a6' : '#153343';
+        ctx.fillRect(x, y, 30, 27);
+        ctx.fillStyle = 'rgba(255,255,255,0.32)';
+        ctx.fillRect(x - 2, y - 3, 34, 3);
+        ctx.fillRect(x + 13, y, 2, 27);
+
+        if ((row + column) % 3 === 0) {
+          ctx.fillStyle = 'rgba(20,30,38,0.55)';
+          ctx.fillRect(x - 4, y + 29, 38, 5);
+          ctx.fillStyle = '#64756f';
+          ctx.fillRect(x - 3, y + 34, 36, 2);
+        } else if ((row * 2 + column) % 7 === 0) {
+          ctx.fillStyle = '#64748b';
+          ctx.fillRect(x + 31, y + 5, 10, 14);
+          ctx.fillStyle = '#94a3b8';
+          ctx.fillRect(x + 29, y + 18, 14, 3);
+        }
+      }
+    }
+
+    ctx.fillStyle = 'rgba(15,23,42,0.65)';
+    ctx.fillRect(4, 0, 8, canvas.height);
+    ctx.fillRect(canvas.width - 12, 0, 8, canvas.height);
+    ctx.fillStyle = accentColor;
+    ctx.fillRect(18, 476, 220, 8);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.anisotropy = 2;
+    return texture;
+  }
+
+  static createSkyTexture() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1024;
+    canvas.height = 512;
+    const ctx = canvas.getContext('2d');
+    const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    gradient.addColorStop(0, '#3d91cb');
+    gradient.addColorStop(0.55, '#8bc7dc');
+    gradient.addColorStop(1, '#f2c9a2');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    for (let cloud = 0; cloud < 32; cloud++) {
+      const x = Math.random() * canvas.width;
+      const y = 70 + Math.random() * 300;
+      const radius = 24 + Math.random() * 50;
+      const cloudGradient = ctx.createRadialGradient(x, y, 2, x, y, radius);
+      cloudGradient.addColorStop(0, 'rgba(255,255,255,0.24)');
+      cloudGradient.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = cloudGradient;
+      ctx.beginPath();
+      ctx.ellipse(x, y, radius * 1.8, radius * 0.55, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.anisotropy = 2;
     return texture;
   }
 
@@ -850,6 +1013,25 @@ class AssetGenerator {
     rightPillar.position.set(5.6, 2.5, 0);
     group.add(rightPillar);
 
+    const platformRoofGeo = new THREE.BoxGeometry(4.0, 0.22, 9.0);
+    const platformRoofMat = new THREE.MeshLambertMaterial({ color: 0x94a3b8 });
+    const platformGeo = new THREE.BoxGeometry(2.4, 0.28, 9.0);
+    const platformMat = new THREE.MeshLambertMaterial({ color: 0x475569 });
+    const supportGeo = new THREE.BoxGeometry(0.28, 3.8, 0.28);
+    [-1, 1].forEach((side) => {
+      const platform = new THREE.Mesh(platformGeo, platformMat);
+      platform.position.set(side * 7.0, 1.15, 0);
+      group.add(platform);
+
+      const roof = new THREE.Mesh(platformRoofGeo, platformRoofMat);
+      roof.position.set(side * 7.8, 3.8, 0);
+      group.add(roof);
+
+      const support = new THREE.Mesh(supportGeo, pillarMat);
+      support.position.set(side * 8.8, 1.9, 0);
+      group.add(support);
+    });
+
     // Station Nameplate Board attached to arch
     const canvas = document.createElement('canvas');
     canvas.width = 512;
@@ -900,6 +1082,9 @@ class Player {
     this.isGrounded = true;
     this.isSliding = false;
     this.slideTimer = 0;
+    this.isFlying = false;
+    this.isLanding = false;
+    this.shieldBubble = null;
     this.runCycle = 0;              // For procedural leg/arm swinging
 
     this.hitbox = new THREE.Box3();
@@ -1194,6 +1379,28 @@ class Player {
     }
   }
 
+  setShieldActive(enabled) {
+    if (enabled && !this.shieldBubble) {
+      this.shieldBubble = new THREE.Mesh(
+        new THREE.SphereGeometry(1.25, 12, 8),
+        new THREE.MeshBasicMaterial({
+          color: 0x67e8f9,
+          transparent: true,
+          opacity: 0.18,
+          wireframe: true,
+          depthWrite: false
+        })
+      );
+      this.shieldBubble.scale.y = 1.25;
+      this.mesh.add(this.shieldBubble);
+    } else if (!enabled && this.shieldBubble) {
+      this.mesh.remove(this.shieldBubble);
+      this.shieldBubble.geometry.dispose();
+      this.shieldBubble.material.dispose();
+      this.shieldBubble = null;
+    }
+  }
+
   update(dt, forwardSpeed, playerZ) {
     // 1. Smooth Lane Transition (Damped Lerp)
     const dx = this.targetX - this.currentX;
@@ -1204,7 +1411,18 @@ class Player {
     this.mesh.rotation.z = -dx * 0.18;
 
     // 2. Vertical Jump Physics
-    if (!this.isGrounded) {
+    if (this.isFlying) {
+      this.isGrounded = false;
+      this.vy = 0;
+      this.y += (CONFIG.POWERUPS.FLY_HEIGHT - this.y) * Math.min(1, dt * 2.8);
+    } else if (this.isLanding) {
+      this.y = Math.max(0, this.y - CONFIG.POWERUPS.FLY_HEIGHT * dt / CONFIG.POWERUPS.FLY_LANDING_SECONDS);
+      this.vy = 0;
+      if (this.y === 0) {
+        this.isLanding = false;
+        this.isGrounded = true;
+      }
+    } else if (!this.isGrounded) {
       this.vy -= CONFIG.GRAVITY * dt;
       this.y += this.vy * dt;
 
@@ -1299,6 +1517,9 @@ class Player {
     this.isSliding = false;
     this.slideTimer = 0;
     this.runCycle = 0;
+    this.isFlying = false;
+    this.isLanding = false;
+    this.setShieldActive(false);
     this.mesh.position.set(0, 0, 0);
     this.mesh.rotation.set(0, 0, 0);
     this.mesh.scale.set(1, 1, 1);
@@ -1316,12 +1537,41 @@ class Player {
 // 5. WORLD, TRACKS & CITY SKYLINE MANAGER
 // ===================================================================
 class WorldManager {
-  constructor(scene) {
+  constructor(scene, camera, hemiLight, directionalLight) {
     this.scene = scene;
+    this.camera = camera;
+    this.hemiLight = hemiLight;
+    this.directionalLight = directionalLight;
     this.trackSegments = [];
     this.cityBuildings = [];
     this.billboards = [];
     this.stationArches = [];
+    this.cityLandmarks = [];
+    this.traffic = [];
+    this.elapsedTime = 0;
+    this.dummy = new THREE.Object3D();
+    this.dayCycleColors = {
+      morningSky: new THREE.Color(0x93d4ed),
+      sunsetSky: new THREE.Color(0xf2a577),
+      nightSky: new THREE.Color(0x17233d),
+      morningFog: new THREE.Color(0xd8eff3),
+      sunsetFog: new THREE.Color(0x7f625d),
+      nightFog: new THREE.Color(0x182438),
+      sky: new THREE.Color(),
+      fog: new THREE.Color()
+    };
+    this.skyTexture = AssetGenerator.createSkyTexture();
+    this.skyDome = new THREE.Mesh(
+      new THREE.SphereGeometry(490, 24, 16),
+      new THREE.MeshBasicMaterial({
+        map: this.skyTexture,
+        side: THREE.BackSide,
+        depthWrite: false,
+        fog: false
+      })
+    );
+    this.skyDome.frustumCulled = false;
+    this.scene.add(this.skyDome);
 
     this.billboardTextures = [
       AssetGenerator.createBillboardTexture("ঢাকা মেট্রোরেল", "Dhaka Metro Rail Line-6", "#006a4e"),
@@ -1331,6 +1581,8 @@ class WorldManager {
     ];
 
     this.buildInitialWorld();
+    this.createStreetLife();
+    this.update(0, 0, 0);
   }
 
   buildInitialWorld() {
@@ -1345,12 +1597,23 @@ class WorldManager {
 
     // 2. Initialize City Skyline Buildings (Left & Right sides)
     const buildingGeo = new THREE.BoxGeometry(1, 1, 1);
-    const buildingColors = [0x1e293b, 0x334155, 0x475569, 0x0f172a, 0x1e3a5f];
+    const facadePalettes = [
+      ['#d5bd8c', '#a64b36'],
+      ['#bd7655', '#783a2b'],
+      ['#87a9ad', '#0f766e'],
+      ['#a7c4d4', '#256b8a'],
+      ['#a7a39a', '#475569'],
+      ['#d2a8ac', '#9f3348']
+    ];
+    this.buildingMaterials = facadePalettes.map(([wall, accent]) => new THREE.MeshLambertMaterial({
+      map: AssetGenerator.createBuildingFacadeTexture(wall, accent),
+      emissive: 0x2d1d0a,
+      emissiveIntensity: 0.04
+    }));
 
     for (let i = 0; i < 40; i++) {
-      const mat = new THREE.MeshLambertMaterial({
-        color: buildingColors[Math.floor(Math.random() * buildingColors.length)]
-      });
+      const materialIndex = Math.floor(Math.random() * this.buildingMaterials.length);
+      const mat = this.buildingMaterials[materialIndex];
       const bldg = new THREE.Mesh(buildingGeo, mat);
       
       const isLeft = (i % 2 === 0);
@@ -1362,6 +1625,7 @@ class WorldManager {
 
       bldg.scale.set(w, h, d);
       bldg.position.set(x, -CONFIG.VIADUCT_ELEVATION + h / 2 - 2, z);
+      bldg.userData.materialIndex = materialIndex;
       this.scene.add(bldg);
       this.cityBuildings.push(bldg);
     }
@@ -1379,9 +1643,162 @@ class WorldManager {
       this.scene.add(bb);
       this.billboards.push(bb);
     }
+
+    this.createCityLandmarks();
   }
 
-  update(playerZ) {
+  createCityLandmarks() {
+    const bodyMaterial = new THREE.MeshLambertMaterial({ color: 0xf1e4c6 });
+    const accentMaterial = new THREE.MeshLambertMaterial({ color: CONFIG.COLORS.MRT_GREEN });
+    const domeMaterial = new THREE.MeshLambertMaterial({ color: 0x0f766e });
+    const craneMaterial = new THREE.MeshLambertMaterial({ color: 0xf59e0b });
+    const groundY = -CONFIG.VIADUCT_ELEVATION - 2;
+
+    for (let i = 0; i < 3; i++) {
+      const mosque = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.BoxGeometry(9, 7, 10), bodyMaterial);
+      body.position.y = 3.5;
+      mosque.add(body);
+
+      const dome = new THREE.Mesh(
+        new THREE.SphereGeometry(2.2, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2),
+        domeMaterial
+      );
+      dome.position.y = 7;
+      mosque.add(dome);
+
+      for (const side of [-1, 1]) {
+        const minaret = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.55, 12, 8), accentMaterial);
+        minaret.position.set(side * 5.1, 6, 0);
+        mosque.add(minaret);
+        const tip = new THREE.Mesh(new THREE.ConeGeometry(0.48, 1.5, 8), craneMaterial);
+        tip.position.set(side * 5.1, 12.75, 0);
+        mosque.add(tip);
+      }
+
+      mosque.position.set(i % 2 ? 30 : -30, groundY, 70 + i * 210);
+      this.scene.add(mosque);
+      this.cityLandmarks.push(mosque);
+    }
+
+    for (let i = 0; i < 2; i++) {
+      const crane = new THREE.Group();
+      const mast = new THREE.Mesh(new THREE.BoxGeometry(0.45, 22, 0.45), craneMaterial);
+      mast.position.y = 11;
+      crane.add(mast);
+      const boom = new THREE.Mesh(new THREE.BoxGeometry(18, 0.35, 0.4), craneMaterial);
+      boom.position.set(3.5, 22, 0);
+      crane.add(boom);
+      const counterweight = new THREE.Mesh(new THREE.BoxGeometry(2.8, 1.2, 1.2), bodyMaterial);
+      counterweight.position.set(-5.5, 21.5, 0);
+      crane.add(counterweight);
+      const hook = new THREE.Mesh(new THREE.BoxGeometry(0.12, 7, 0.12), craneMaterial);
+      hook.position.set(8, 18.5, 0);
+      crane.add(hook);
+      crane.position.set(i ? -35 : 35, groundY, 210 + i * 330);
+      this.scene.add(crane);
+      this.cityLandmarks.push(crane);
+    }
+  }
+
+  createStreetLife() {
+    this.road = new THREE.Mesh(
+      new THREE.BoxGeometry(36, 0.16, CONFIG.TRAFFIC_LENGTH),
+      new THREE.MeshLambertMaterial({ color: 0x26323a })
+    );
+    this.road.position.y = -CONFIG.VIADUCT_ELEVATION - 1.4;
+    this.scene.add(this.road);
+
+    const vehicleTypes = [
+      { count: 5, size: [1.7, 1.3, 4.2], colors: [0xd43d32, 0xf6c344, 0x2680b9] },
+      { count: 8, size: [1.35, 0.9, 2.7], colors: [0xf7f3e8, 0x1d6d61, 0x9f3f34, 0x315b87] },
+      { count: 7, size: [1.15, 1.05, 1.9], colors: [0x177c63, 0x177c63, 0x0e6b9a] },
+      { count: 6, size: [1.15, 1.25, 2.1], colors: [0xd2a634, 0x1c8b72, 0xb94738] }
+    ];
+
+    vehicleTypes.forEach((type) => {
+      const mesh = new THREE.InstancedMesh(
+        new THREE.BoxGeometry(type.size[0], type.size[1], type.size[2]),
+        new THREE.MeshLambertMaterial({ color: 0xffffff }),
+        type.count
+      );
+      const vehicles = [];
+      for (let i = 0; i < type.count; i++) {
+        const vehicle = {
+          relativeZ: Math.random() * CONFIG.TRAFFIC_LENGTH,
+          x: (Math.random() < 0.5 ? -1 : 1) * (7 + Math.random() * 8),
+          direction: Math.random() < 0.5 ? -1 : 1,
+          speed: 8 + Math.random() * 18
+        };
+        vehicles.push(vehicle);
+        mesh.setColorAt(i, new THREE.Color(type.colors[i % type.colors.length]));
+      }
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      this.scene.add(mesh);
+      this.traffic.push({ mesh, vehicles, height: type.size[1] });
+    });
+
+    const treeCount = 14;
+    this.treeTrunks = new THREE.InstancedMesh(
+      new THREE.CylinderGeometry(0.16, 0.25, 3.2, 6),
+      new THREE.MeshLambertMaterial({ color: 0x795548 }),
+      treeCount
+    );
+    this.treeCanopies = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(1.7, 7, 6),
+      new THREE.MeshLambertMaterial({ color: 0x347b4d }),
+      treeCount
+    );
+    this.treePositions = Array.from({ length: treeCount }, () => ({
+      relativeZ: Math.random() * CONFIG.TRAFFIC_LENGTH,
+      x: (Math.random() < 0.5 ? -1 : 1) * (20 + Math.random() * 10)
+    }));
+    this.scene.add(this.treeTrunks, this.treeCanopies);
+  }
+
+  update(playerZ, dt, playerSpeed) {
+    this.elapsedTime += dt;
+    this.updateTimeOfDay(playerZ);
+    this.skyDome.position.set(0, 3, playerZ - 6.8);
+    this.skyDome.rotation.y = this.elapsedTime * 0.0015;
+    this.road.position.z = playerZ;
+
+    const dummy = this.dummy;
+    this.traffic.forEach(({ mesh, vehicles, height }) => {
+      vehicles.forEach((vehicle, index) => {
+        vehicle.relativeZ += (vehicle.direction * vehicle.speed - playerSpeed) * dt;
+        vehicle.relativeZ = ((vehicle.relativeZ % CONFIG.TRAFFIC_LENGTH) + CONFIG.TRAFFIC_LENGTH) % CONFIG.TRAFFIC_LENGTH;
+        dummy.position.set(vehicle.x, -CONFIG.VIADUCT_ELEVATION - 0.62 + height / 2, playerZ + vehicle.relativeZ - CONFIG.TRAFFIC_LENGTH / 2);
+        dummy.rotation.y = vehicle.direction < 0 ? Math.PI : 0;
+        dummy.updateMatrix();
+        mesh.setMatrixAt(index, dummy.matrix);
+      });
+      mesh.instanceMatrix.needsUpdate = true;
+    });
+
+    this.treePositions.forEach((tree, index) => {
+      tree.relativeZ = (tree.relativeZ - playerSpeed * dt + CONFIG.TRAFFIC_LENGTH) % CONFIG.TRAFFIC_LENGTH;
+      const z = playerZ + tree.relativeZ - CONFIG.TRAFFIC_LENGTH / 2;
+      dummy.position.set(tree.x, -CONFIG.VIADUCT_ELEVATION - 1.4, z);
+      dummy.scale.set(1, 1, 1);
+      dummy.updateMatrix();
+      this.treeTrunks.setMatrixAt(index, dummy.matrix);
+      dummy.position.y += 2.5;
+      dummy.scale.set(1.5, 1.5, 1.5);
+      dummy.updateMatrix();
+      this.treeCanopies.setMatrixAt(index, dummy.matrix);
+    });
+    this.treeTrunks.instanceMatrix.needsUpdate = true;
+    this.treeCanopies.instanceMatrix.needsUpdate = true;
+
+    this.cityLandmarks.forEach((landmark) => {
+      if (landmark.position.z < playerZ - 80) {
+        let farthestZ = -Infinity;
+        this.cityLandmarks.forEach((item) => { farthestZ = Math.max(farthestZ, item.position.z); });
+        landmark.position.z = farthestZ + 180 + Math.random() * 100;
+      }
+    });
+
     // 1. Recycle Track Segments ahead of player
     this.trackSegments.forEach(seg => {
       if (seg.position.z < playerZ + CONFIG.DESPAWN_Z_OFFSET) {
@@ -1411,6 +1828,50 @@ class WorldManager {
     });
   }
 
+  updateTimeOfDay(playerZ) {
+    const phase = (playerZ % CONFIG.DAY_CYCLE_DISTANCE) / CONFIG.DAY_CYCLE_DISTANCE;
+    const { morningSky, sunsetSky, nightSky, morningFog, sunsetFog, nightFog } = this.dayCycleColors;
+    const skyColor = this.dayCycleColors.sky;
+    const fogColor = this.dayCycleColors.fog;
+    let daylight;
+
+    if (phase < 0.38) {
+      skyColor.copy(morningSky);
+      fogColor.copy(morningFog);
+      daylight = 1;
+    } else if (phase < 0.57) {
+      const amount = (phase - 0.38) / 0.19;
+      skyColor.copy(morningSky).lerp(sunsetSky, amount);
+      fogColor.copy(morningFog).lerp(sunsetFog, amount);
+      daylight = 1 - amount * 0.38;
+    } else if (phase < 0.72) {
+      const amount = (phase - 0.57) / 0.15;
+      skyColor.copy(sunsetSky).lerp(nightSky, amount);
+      fogColor.copy(sunsetFog).lerp(nightFog, amount);
+      daylight = 0.62 - amount * 0.44;
+    } else if (phase < 0.88) {
+      skyColor.copy(nightSky);
+      fogColor.copy(nightFog);
+      daylight = 0.18;
+    } else {
+      const amount = (phase - 0.88) / 0.12;
+      skyColor.copy(nightSky).lerp(morningSky, amount);
+      fogColor.copy(nightFog).lerp(morningFog, amount);
+      daylight = 0.18 + amount * 0.82;
+    }
+
+    this.scene.background.copy(skyColor);
+    this.scene.fog.color.copy(fogColor);
+    this.skyDome.material.color.copy(skyColor);
+    this.hemiLight.intensity = 0.18 + daylight * 0.58;
+    this.hemiLight.color.copy(skyColor);
+    this.directionalLight.color.set(phase > 0.42 && phase < 0.68 ? 0xffbd83 : 0xfff7ed);
+    this.directionalLight.intensity = 0.2 + daylight * 0.75;
+    this.buildingMaterials.forEach((material) => {
+      material.emissiveIntensity = 0.02 + (1 - daylight) * 0.48;
+    });
+  }
+
   spawnStationArch(stationNameBn, stationNameEn, zPos) {
     const arch = AssetGenerator.createStationArchMesh(stationNameBn, stationNameEn);
     arch.position.set(0, 0, zPos);
@@ -1434,6 +1895,9 @@ class WorldManager {
       const isLeft = (i % 2 === 0);
       bb.position.set(isLeft ? -7.2 : 7.2, 2.5, i * 60 + 30);
     });
+    this.cityLandmarks.forEach((landmark, i) => {
+      landmark.position.z = 70 + i * 150;
+    });
 
     // Clean up station arches
     this.stationArches.forEach(arch => this.scene.remove(arch));
@@ -1446,9 +1910,10 @@ class WorldManager {
 // 6. OBSTACLE & COIN MANAGER (Object Pooling & Fair Spawner)
 // ===================================================================
 class ObstacleManager {
-  constructor(scene, audioCtrl) {
+  constructor(scene, audioCtrl, game) {
     this.scene = scene;
     this.audioCtrl = audioCtrl;
+    this.game = game;
 
     this.hazardTex = AssetGenerator.createHazardTexture();
     this.coinTex = AssetGenerator.createCoinTexture();
@@ -1460,8 +1925,9 @@ class ObstacleManager {
     this.coins = [];
     this.particles = [];
 
-    this.nextSpawnZ = 45.0;          // Next distance along z to spawn obstacle row
+    this.nextSpawnZ = CONFIG.INITIAL_OBSTACLE_SPAWN_DIST;
     this.currentStationIndex = 0;
+    this.trainWarningBanner = document.getElementById('train-warning');
 
     this.initPools();
   }
@@ -1474,6 +1940,7 @@ class ObstacleManager {
       train.userData = {
         active: false,
         lane: 0,
+        encounterZ: 0,
         hitbox: new THREE.Box3(),
         hornPlayed: false
       };
@@ -1508,7 +1975,9 @@ class ObstacleManager {
       this.coins.push(coin);
     }
 
-    // 5. Coin Burst Particles
+    this.initPowerUpPool();
+
+    // 6. Coin Burst Particles
     const pGeo = new THREE.BoxGeometry(0.12, 0.12, 0.12);
     const pMat = new THREE.MeshBasicMaterial({ color: 0xfef08a });
     for (let i = 0; i < 30; i++) {
@@ -1518,6 +1987,138 @@ class ObstacleManager {
       this.scene.add(p);
       this.particles.push(p);
     }
+  }
+
+  initPowerUpPool() {
+    const definitions = {
+      FLY: { icon: '✦', color: 0x38bdf8 },
+      DASH: { icon: '⚡', color: 0xf97316 },
+      MAGNET: { icon: 'M', color: 0xef4444 },
+      SHIELD: { icon: '◇', color: 0x22d3ee },
+      SCORE_X2: { icon: '×2', color: 0xfbbf24 }
+    };
+    this.powerUpDefinitions = definitions;
+    this.powerUpMaterials = {};
+    this.powerUpIconMaterials = {};
+
+    Object.entries(definitions).forEach(([type, definition]) => {
+      this.powerUpMaterials[type] = new THREE.MeshBasicMaterial({
+        color: definition.color,
+        transparent: true,
+        opacity: 0.85
+      });
+      const canvas = document.createElement('canvas');
+      canvas.width = 128;
+      canvas.height = 128;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#0f172a';
+      ctx.beginPath();
+      ctx.arc(64, 64, 58, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = `#${definition.color.toString(16).padStart(6, '0')}`;
+      ctx.lineWidth = 8;
+      ctx.stroke();
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 56px Arial, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(definition.icon, 64, 66);
+      this.powerUpIconMaterials[type] = new THREE.SpriteMaterial({
+        map: new THREE.CanvasTexture(canvas),
+        transparent: true,
+        depthWrite: false
+      });
+    });
+
+    const sphereGeometry = new THREE.IcosahedronGeometry(0.48, 1);
+    const ringGeometry = new THREE.TorusGeometry(0.58, 0.07, 6, 20);
+    this.powerUps = [];
+    for (let i = 0; i < CONFIG.POWERUPS.POOL_SIZE; i++) {
+      const item = new THREE.Group();
+      item.add(new THREE.Mesh(sphereGeometry, this.powerUpMaterials.FLY));
+      const ring = new THREE.Mesh(ringGeometry, this.powerUpMaterials.FLY);
+      ring.rotation.x = Math.PI / 2;
+      item.add(ring);
+      const icon = new THREE.Sprite(this.powerUpIconMaterials.FLY);
+      icon.position.z = 0.54;
+      icon.scale.set(0.8, 0.8, 1);
+      item.add(icon);
+      item.visible = false;
+      item.userData = {
+        active: false,
+        type: 'FLY',
+        phase: Math.random() * Math.PI * 2,
+        hitbox: new THREE.Box3()
+      };
+      this.scene.add(item);
+      this.powerUps.push(item);
+    }
+  }
+
+  spawnPowerUp(type, zPos) {
+    const candidates = [-1, 0, 1].sort(() => Math.random() - 0.5);
+    for (const lane of candidates) {
+      const laneOccupied = this.trains.some(train =>
+        train.userData.active &&
+        train.userData.lane === lane &&
+        Math.abs(train.userData.encounterZ - zPos) < 28
+      ) || this.barricades.some(obstacle =>
+        obstacle.userData.active &&
+        Math.round(-obstacle.position.x / CONFIG.LANE_WIDTH) === lane &&
+        Math.abs(obstacle.position.z - zPos) < 18
+      ) || this.gantries.some(obstacle =>
+        obstacle.userData.active &&
+        Math.round(-obstacle.position.x / CONFIG.LANE_WIDTH) === lane &&
+        Math.abs(obstacle.position.z - zPos) < 18
+      );
+      if (laneOccupied) continue;
+
+      const item = this.powerUps.find(powerUp => !powerUp.userData.active);
+      if (!item) return false;
+      const definition = this.powerUpDefinitions[type];
+      item.userData.active = true;
+      item.userData.type = type;
+      item.position.set(CONFIG.LANES[lane + 1], 1.25, zPos);
+      item.children[0].material = this.powerUpMaterials[type];
+      item.children[1].material = this.powerUpMaterials[type];
+      item.children[2].material = this.powerUpIconMaterials[type];
+      item.visible = true;
+      item.userData.hitbox.setFromCenterAndSize(
+        item.position,
+        new THREE.Vector3(1.35, 1.5, 1.35)
+      );
+      item.userData.lane = lane;
+      item.userData.baseY = 1.25;
+      return true;
+    }
+    return false;
+  }
+
+  isLandingZoneReserved(zPos) {
+    return this.game.powerUps && this.game.powerUps.isLandingZoneReserved(zPos);
+  }
+
+  spawnFlyTrail(playerZ, lane) {
+    for (let offset = 18; offset <= 66; offset += 12) {
+      const trailLane = lane + Math.floor((offset / 12) % 3) - 1;
+      const clampedLane = Math.max(-1, Math.min(1, trailLane));
+      this.spawnCoin(CONFIG.LANES[clampedLane + 1], CONFIG.POWERUPS.FLY_HEIGHT, playerZ + offset);
+    }
+  }
+
+  clearHazardsInRange(startZ, endZ) {
+    this.trains.forEach((train) => {
+      if (train.userData.active && train.userData.encounterZ >= startZ && train.userData.encounterZ <= endZ) {
+        train.visible = false;
+        train.userData.active = false;
+      }
+    });
+    [this.barricades, this.gantries].forEach((pool) => pool.forEach((obstacle) => {
+      if (obstacle.userData.active && obstacle.position.z >= startZ && obstacle.position.z <= endZ) {
+        obstacle.visible = false;
+        obstacle.userData.active = false;
+      }
+    }));
   }
 
   spawnCoin(x, y, z) {
@@ -1549,15 +2150,39 @@ class ObstacleManager {
     }
   }
 
-  spawnTrain(laneIndex, zPos) {
+  spawnTrain(laneIndex, zPos, encounterZ, currentSpeed) {
+    const encounterGap = currentSpeed * CONFIG.TRAIN_MIN_GAP_SECONDS;
+    const relativeSpeed = currentSpeed + CONFIG.TRAIN_SPEED_RELATIVE;
+    const spatialGap = relativeSpeed * CONFIG.TRAIN_MIN_GAP_SECONDS;
+    const encounterTooClose = this.trains.some(train =>
+      train.userData.active &&
+      Math.abs(train.userData.encounterZ - encounterZ) < encounterGap
+    );
+    const sameLaneTooClose = this.trains.some(train =>
+      train.userData.active &&
+      train.userData.lane === laneIndex &&
+      Math.abs(train.position.z - zPos) < spatialGap
+    );
+    if (encounterTooClose || sameLaneTooClose) return false;
+
     const train = this.trains.find(t => !t.userData.active);
-    if (!train) return;
+    if (!train) return false;
 
     train.visible = true;
     train.userData.active = true;
     train.userData.lane = laneIndex;
+    train.userData.encounterZ = encounterZ;
     train.userData.hornPlayed = false;
     train.position.set(CONFIG.LANES[laneIndex + 1], 0, zPos);
+    return true;
+  }
+
+  spawnTrainForPattern(laneIndex, spawnZ, playerZ, currentSpeed) {
+    const encounterZ = spawnZ + 6;
+    const timeToEncounter = Math.max(0, (encounterZ - playerZ) / currentSpeed);
+    const trainZ = encounterZ + CONFIG.TRAIN_COLLISION_LEAD +
+      CONFIG.TRAIN_SPEED_RELATIVE * timeToEncounter;
+    return this.spawnTrain(laneIndex, trainZ, encounterZ, currentSpeed);
   }
 
   spawnBarricade(laneIndex, zPos) {
@@ -1595,7 +2220,18 @@ class ObstacleManager {
   }
 
   // GUARANTEED PASSABLE PROCEDURAL SPAWN PATTERNS
-  generateFairObstaclePattern(spawnZ) {
+  generateFairObstaclePattern(spawnZ, playerZ, currentSpeed) {
+    // Leave a clear recovery window around every train encounter; a skipped row is safer than a stacked hazard.
+    const encounterGap = currentSpeed * CONFIG.TRAIN_MIN_GAP_SECONDS;
+    const targetZ = spawnZ + 6;
+    if (this.isLandingZoneReserved(targetZ)) return;
+    if (this.trains.some(train =>
+      train.userData.active &&
+      Math.abs(train.userData.encounterZ - targetZ) < encounterGap
+    )) {
+      return;
+    }
+
     // Lane indices: -1 (Left), 0 (Middle), 1 (Right)
     const patternType = Math.floor(Math.random() * 6);
 
@@ -1604,7 +2240,7 @@ class ObstacleManager {
         // Pattern 0: Single oncoming Dhaka Metro train in 1 lane, coins in another
         {
           const trainLane = Math.floor(Math.random() * 3) - 1;
-          this.spawnTrain(trainLane, spawnZ + 25);
+          this.spawnTrainForPattern(trainLane, spawnZ, playerZ, currentSpeed);
           
           const coinLane = (trainLane + 1 > 1) ? -1 : trainLane + 1;
           this.spawnCoinRow(coinLane, spawnZ, 5);
@@ -1632,7 +2268,7 @@ class ObstacleManager {
           const safeLane = Math.floor(Math.random() * 3) - 1;
           const blockedLanes = [-1, 0, 1].filter(l => l !== safeLane);
           
-          this.spawnTrain(blockedLanes[0], spawnZ + 25);
+          this.spawnTrainForPattern(blockedLanes[0], spawnZ, playerZ, currentSpeed);
           this.spawnBarricade(blockedLanes[1], spawnZ + 6);
           this.spawnCoinRow(safeLane, spawnZ, 5);
         }
@@ -1666,7 +2302,7 @@ class ObstacleManager {
       default:
         // Pattern 5: Train on one side, slide overhead gantry on opposite, middle clear
         {
-          this.spawnTrain(-1, spawnZ + 25);
+          this.spawnTrainForPattern(-1, spawnZ, playerZ, currentSpeed);
           this.spawnOverheadGantry(1, spawnZ + 5);
           this.spawnCoinRow(0, spawnZ, 6);
         }
@@ -1676,8 +2312,8 @@ class ObstacleManager {
 
   update(dt, playerZ, currentSpeed, worldMgr, onStationReached) {
     // 1. Procedural Obstacle Row Spawning
-    if (this.nextSpawnZ < playerZ + 110.0) {
-      this.generateFairObstaclePattern(this.nextSpawnZ);
+    if (this.nextSpawnZ < playerZ + CONFIG.OBSTACLE_SPAWN_LOOKAHEAD) {
+      this.generateFairObstaclePattern(this.nextSpawnZ, playerZ, currentSpeed);
       
       // Dynamic spacing scaling slightly with speed
       const speedFactor = currentSpeed / CONFIG.START_SPEED;
@@ -1697,23 +2333,32 @@ class ObstacleManager {
     }
 
     // 3. Update Trains (Move forward towards player)
+    let warningTrain = null;
+    let nearestWarningDistance = Infinity;
     this.trains.forEach(train => {
       if (!train.userData.active) return;
 
       // Oncoming train moves backward in z (towards player running forward in +z)
       train.position.z -= CONFIG.TRAIN_SPEED_RELATIVE * dt;
 
-      // Play train horn when within proximity
       const dist = train.position.z - playerZ;
-      if (!train.userData.hornPlayed && dist > 10 && dist < 45) {
+      const warningDistance = (currentSpeed + CONFIG.TRAIN_SPEED_RELATIVE) *
+        CONFIG.TRAIN_WARNING_TIME + CONFIG.TRAIN_COLLISION_LEAD;
+      if (dist > CONFIG.TRAIN_COLLISION_LEAD && dist <= warningDistance) {
+        if (dist < nearestWarningDistance) {
+          nearestWarningDistance = dist;
+          warningTrain = train;
+        }
+      }
+      if (!train.userData.hornPlayed && dist > CONFIG.TRAIN_COLLISION_LEAD && dist <= warningDistance) {
         this.audioCtrl.playTrainHorn();
         train.userData.hornPlayed = true;
       }
 
-      // Update Hitbox: Train nose is at -7.9, back at +6.0, center relative to position is z = -0.95
+      // Keep lane hitboxes slightly inside the train body to make side dodges forgiving.
       train.userData.hitbox.setFromCenterAndSize(
         new THREE.Vector3(train.position.x, 1.45, train.position.z - 0.95),
-        new THREE.Vector3(2.1, 2.7, 14.0)
+        new THREE.Vector3(1.8, 2.7, 12.0)
       );
 
       // Despawn once well behind player
@@ -1722,6 +2367,15 @@ class ObstacleManager {
         train.userData.active = false;
       }
     });
+    if (warningTrain) {
+      const laneName = warningTrain.userData.lane < 0
+        ? 'LEFT'
+        : warningTrain.userData.lane > 0 ? 'RIGHT' : 'MIDDLE';
+      this.trainWarningBanner.textContent = `🚆 TRAIN APPROACHING • ${laneName} LANE`;
+      this.trainWarningBanner.classList.add('show');
+    } else {
+      this.trainWarningBanner.classList.remove('show');
+    }
 
     // 4. Update Barricades
     this.barricades.forEach(bar => {
@@ -1767,7 +2421,23 @@ class ObstacleManager {
       }
     });
 
-    // 7. Update Particles
+    this.powerUps.forEach((powerUp) => {
+      if (!powerUp.userData.active) return;
+      powerUp.rotation.y += 1.8 * dt;
+      powerUp.rotation.z = Math.sin(performance.now() * 0.002 + powerUp.userData.phase) * 0.12;
+      powerUp.position.y = powerUp.userData.baseY +
+        Math.sin(performance.now() * 0.003 + powerUp.userData.phase) * 0.22;
+      powerUp.userData.hitbox.setFromCenterAndSize(
+        powerUp.position,
+        new THREE.Vector3(1.35, 1.5, 1.35)
+      );
+      if (powerUp.position.z < playerZ + CONFIG.DESPAWN_Z_OFFSET) {
+        powerUp.visible = false;
+        powerUp.userData.active = false;
+      }
+    });
+
+    // 8. Update Particles
     this.particles.forEach(p => {
       if (!p.userData.active) return;
 
@@ -1785,7 +2455,7 @@ class ObstacleManager {
     });
   }
 
-  checkCollisions(player, onCoinCollected, onCrash) {
+  checkCollisions(player, onCoinCollected, onCrash, onPowerUp) {
     const playerBox = player.hitbox;
 
     // 1. Coin Collection Check
@@ -1799,10 +2469,19 @@ class ObstacleManager {
       }
     });
 
+    this.powerUps.forEach((powerUp) => {
+      if (!powerUp.userData.active || !player.hitbox.intersectsBox(powerUp.userData.hitbox)) return;
+      if (onPowerUp && onPowerUp(powerUp.userData.type)) {
+        powerUp.visible = false;
+        powerUp.userData.active = false;
+      }
+    });
+
     // 2. Train Collision Check
     for (const train of this.trains) {
       if (train.userData.active && playerBox.intersectsBox(train.userData.hitbox)) {
-        onCrash("মেট্রোরেলের সাথে মুখোমুখি ধাক্কা লেগেছে! / Head-on collision with Dhaka Metro train!");
+        if (player.isFlying) continue;
+        onCrash("মেট্রোরেলের সাথে মুখোমুখি ধাক্কা লেগেছে! / Head-on collision with Dhaka Metro train!", train);
         return true;
       }
     }
@@ -1810,7 +2489,8 @@ class ObstacleManager {
     // 3. Low Barricade Collision Check (Jump over)
     for (const bar of this.barricades) {
       if (bar.userData.active && playerBox.intersectsBox(bar.userData.hitbox)) {
-        onCrash("ট্র্যাকের বাধার সাথে ধাক্কা লেগেছে! / Crashed into maintenance barrier! Jump next time.");
+        if (player.isFlying) continue;
+        onCrash("ট্র্যাকের বাধার সাথে ধাক্কা লেগেছে! / Crashed into maintenance barrier! Jump next time.", bar);
         return true;
       }
     }
@@ -1818,7 +2498,8 @@ class ObstacleManager {
     // 4. Overhead Gantry Collision Check (Slide under)
     for (const gantry of this.gantries) {
       if (gantry.userData.active && playerBox.intersectsBox(gantry.userData.hitbox)) {
-        onCrash("ওভারহেড সিগন্যাল বারে ধাক্কা লেগেছে! / Struck overhead signal bar! Slide next time.");
+        if (player.isFlying) continue;
+        onCrash("ওভারহেড সিগন্যাল বারে ধাক্কা লেগেছে! / Struck overhead signal bar! Slide next time.", gantry);
         return true;
       }
     }
@@ -1831,10 +2512,250 @@ class ObstacleManager {
     this.barricades.forEach(b => { b.visible = false; b.userData.active = false; });
     this.gantries.forEach(g => { g.visible = false; g.userData.active = false; });
     this.coins.forEach(c => { c.visible = false; c.userData.active = false; });
+    this.powerUps.forEach(p => { p.visible = false; p.userData.active = false; });
     this.particles.forEach(p => { p.visible = false; p.userData.active = false; });
 
-    this.nextSpawnZ = 45.0;
+    this.nextSpawnZ = CONFIG.INITIAL_OBSTACLE_SPAWN_DIST;
     this.currentStationIndex = 0;
+  }
+}
+
+class PowerUpController {
+  constructor(game, obstacleManager) {
+    this.game = game;
+    this.obstacles = obstacleManager;
+    this.activeMajor = null;
+    this.scoreTimeLeft = 0;
+    this.spawnTimeLeft = this.randomSpawnDelay();
+    this.dashRecoveryLeft = 0;
+    this.dashMultiplier = 1;
+    this.landingZone = null;
+    this.collected = 0;
+    this.hudRefresh = 0;
+    this.hud = document.getElementById('powerup-hud');
+    this.hudTypeKey = '';
+    this.labels = {
+      FLY: { icon: '🪽', name: 'FLY', duration: CONFIG.POWERUPS.FLY_DURATION, color: '#38bdf8' },
+      DASH: { icon: '⚡', name: 'SUPER SPEED', duration: CONFIG.POWERUPS.DASH_DURATION, color: '#f97316' },
+      MAGNET: { icon: '🧲', name: 'COIN MAGNET', duration: CONFIG.POWERUPS.MAGNET_DURATION, color: '#ef4444' },
+      SHIELD: { icon: '🛡️', name: 'SHIELD', duration: CONFIG.POWERUPS.SHIELD_DURATION, color: '#22d3ee' },
+      SCORE_X2: { icon: '×2', name: 'SCORE x2', duration: CONFIG.POWERUPS.SCORE_X2_DURATION, color: '#fbbf24' }
+    };
+  }
+
+  randomSpawnDelay() {
+    const { SPAWN_MIN_SECONDS, SPAWN_MAX_SECONDS } = CONFIG.POWERUPS;
+    return SPAWN_MIN_SECONDS + Math.random() * (SPAWN_MAX_SECONDS - SPAWN_MIN_SECONDS);
+  }
+
+  isLandingZoneReserved(zPos) {
+    return !!this.landingZone &&
+      zPos >= this.landingZone.start &&
+      zPos <= this.landingZone.end;
+  }
+
+  activate(type) {
+    const config = CONFIG.POWERUPS;
+    if (type === 'SCORE_X2') {
+      this.scoreTimeLeft = Math.max(this.scoreTimeLeft, config.SCORE_X2_DURATION);
+      this.game.audio.playPowerUp();
+      this.game.triggerHaptic(CONFIG.HAPTIC_POWERUP_MS);
+      this.obstacles.triggerCoinBurst(this.game.player.mesh.position);
+      this.collected++;
+      this.renderHud();
+      return true;
+    }
+    if (this.activeMajor) return false;
+
+    const label = this.labels[type];
+    if (!label) return false;
+    this.activeMajor = { type, timeLeft: label.duration, duration: label.duration };
+    this.game.audio.playPowerUp();
+    this.game.triggerHaptic(CONFIG.HAPTIC_POWERUP_MS);
+    this.obstacles.triggerCoinBurst(this.game.player.mesh.position);
+    this.collected++;
+
+    if (type === 'FLY') {
+      this.game.player.isFlying = true;
+      this.game.player.isLanding = false;
+      this.game.obstacles.spawnFlyTrail(this.game.distance, this.game.player.lane);
+      this.updateLandingReservation(this.game.distance, this.game.speed);
+    } else if (type === 'SHIELD') {
+      this.game.player.setShieldActive(true);
+    }
+
+    this.renderHud();
+    return true;
+  }
+
+  updateLandingReservation(playerZ, currentSpeed) {
+    if (!this.activeMajor || this.activeMajor.type !== 'FLY') return;
+    const landingZ = playerZ + currentSpeed * this.activeMajor.timeLeft;
+    const clearance = CONFIG.POWERUPS.FLY_LANDING_CLEARANCE;
+    this.landingZone = { start: landingZ - clearance, end: landingZ + clearance };
+    this.obstacles.clearHazardsInRange(this.landingZone.start, this.landingZone.end);
+  }
+
+  update(dt, playerZ, currentSpeed) {
+    this.hudRefresh += dt;
+    this.spawnTimeLeft -= dt;
+    if (this.spawnTimeLeft <= 0) {
+      const types = this.activeMajor
+        ? ['SCORE_X2']
+        : Object.keys(this.labels);
+      const type = types[Math.floor(Math.random() * types.length)];
+      if (this.obstacles.spawnPowerUp(type, playerZ + CONFIG.POWERUPS.SPAWN_DISTANCE)) {
+        this.spawnTimeLeft = this.randomSpawnDelay();
+      } else {
+        this.spawnTimeLeft = 2;
+      }
+    }
+
+    if (this.activeMajor) {
+      this.activeMajor.timeLeft -= dt;
+      if (this.activeMajor.type === 'FLY') {
+        this.updateLandingReservation(playerZ, currentSpeed);
+      }
+      if (this.activeMajor.timeLeft <= 0) this.expireMajor(playerZ, currentSpeed);
+    }
+    if (this.scoreTimeLeft > 0) {
+      this.scoreTimeLeft = Math.max(0, this.scoreTimeLeft - dt);
+      if (this.scoreTimeLeft === 0) this.game.audio.playPowerUpEnd();
+    }
+
+    if (this.activeMajor && this.activeMajor.type === 'MAGNET') this.pullCoins(playerZ, dt);
+    if (this.dashRecoveryLeft > 0) {
+      this.dashRecoveryLeft = Math.max(0, this.dashRecoveryLeft - dt);
+      this.dashMultiplier = 1 + (CONFIG.POWERUPS.DASH_SPEED_MULTIPLIER - 1) *
+        this.dashRecoveryLeft / CONFIG.POWERUPS.DASH_RECOVERY_SECONDS;
+    } else if (!this.activeMajor || this.activeMajor.type !== 'DASH') {
+      this.dashMultiplier = 1;
+    }
+
+    if (this.landingZone && !this.game.player.isFlying && !this.game.player.isLanding &&
+        this.game.player.y === 0 && playerZ > this.landingZone.end) {
+      this.landingZone = null;
+    }
+    if (this.hudRefresh >= 0.1) {
+      this.hudRefresh = 0;
+      this.renderHud();
+    }
+  }
+
+  expireMajor(playerZ, currentSpeed) {
+    const expired = this.activeMajor;
+    if (!expired) return;
+    if (expired.type === 'FLY') {
+      this.game.player.isFlying = false;
+      this.game.player.isLanding = this.game.player.y > 0;
+      const landEnd = playerZ + currentSpeed * CONFIG.POWERUPS.FLY_LANDING_SECONDS;
+      this.landingZone = {
+        start: playerZ - 10,
+        end: landEnd + CONFIG.POWERUPS.FLY_LANDING_CLEARANCE
+      };
+      this.obstacles.clearHazardsInRange(this.landingZone.start, this.landingZone.end);
+    }
+    if (expired.type === 'SHIELD') this.game.player.setShieldActive(false);
+    if (expired.type === 'DASH') this.dashRecoveryLeft = CONFIG.POWERUPS.DASH_RECOVERY_SECONDS;
+    this.activeMajor = null;
+    this.game.audio.playPowerUpEnd();
+    this.game.triggerHaptic(CONFIG.HAPTIC_POWERUP_MS);
+    this.obstacles.triggerCoinBurst(this.game.player.mesh.position);
+  }
+
+  pullCoins(playerZ, dt) {
+    const player = this.game.player;
+    const range = CONFIG.POWERUPS.MAGNET_RANGE;
+    const strength = Math.min(1, CONFIG.POWERUPS.MAGNET_STRENGTH * dt);
+    this.obstacles.coins.forEach((coin) => {
+      if (!coin.userData.active) return;
+      const dx = player.currentX - coin.position.x;
+      const dz = playerZ + 0.35 - coin.position.z;
+      if (Math.hypot(dx, dz) > range) return;
+      coin.position.x += dx * strength;
+      coin.position.y += (player.y + 0.9 - coin.position.y) * strength;
+      coin.position.z += dz * strength;
+      coin.userData.hitbox.setFromCenterAndSize(
+        coin.position,
+        new THREE.Vector3(0.9, 0.9, 0.9)
+      );
+    });
+  }
+
+  getSpeedMultiplier() {
+    return this.activeMajor && this.activeMajor.type === 'DASH'
+      ? CONFIG.POWERUPS.DASH_SPEED_MULTIPLIER
+      : this.dashMultiplier;
+  }
+
+  getScoreMultiplier() {
+    return this.scoreTimeLeft > 0 ? 2 : 1;
+  }
+
+  absorbHit(obstacle) {
+    if (!this.isInvincible()) return false;
+    if (this.activeMajor && this.activeMajor.type === 'SHIELD') {
+      this.activeMajor = null;
+      this.game.player.setShieldActive(false);
+      this.game.audio.playPowerUpEnd();
+      this.game.triggerHaptic(CONFIG.HAPTIC_POWERUP_MS);
+      this.obstacles.triggerCoinBurst(this.game.player.mesh.position);
+    }
+    if (obstacle && obstacle.userData) {
+      obstacle.visible = false;
+      obstacle.userData.active = false;
+    }
+    this.renderHud();
+    return true;
+  }
+
+  isInvincible() {
+    return !!this.activeMajor &&
+      (this.activeMajor.type === 'DASH' || this.activeMajor.type === 'SHIELD');
+  }
+
+  reset() {
+    this.activeMajor = null;
+    this.scoreTimeLeft = 0;
+    this.spawnTimeLeft = this.randomSpawnDelay();
+    this.dashRecoveryLeft = 0;
+    this.dashMultiplier = 1;
+    this.landingZone = null;
+    this.collected = 0;
+    this.game.player.isFlying = false;
+    this.game.player.isLanding = false;
+    this.game.player.setShieldActive(false);
+    this.hudTypeKey = '';
+    this.renderHud();
+  }
+
+  renderHud() {
+    const active = [];
+    if (this.activeMajor) active.push(this.activeMajor);
+    if (this.scoreTimeLeft > 0) {
+      active.push({
+        type: 'SCORE_X2',
+        timeLeft: this.scoreTimeLeft,
+        duration: CONFIG.POWERUPS.SCORE_X2_DURATION
+      });
+    }
+    const typeKey = active.map(item => item.type).join(',');
+    if (typeKey !== this.hudTypeKey) {
+      this.hudTypeKey = typeKey;
+      this.hud.innerHTML = active.map(item => {
+        const label = this.labels[item.type];
+        return `<div class="powerup-timer" data-powerup="${item.type}" style="--powerup-color:${label.color}">` +
+          `<span>${label.icon} ${label.name}</span> <span class="powerup-time"></span>` +
+          '<div class="powerup-timer-track"><div class="powerup-timer-fill"></div></div></div>';
+      }).join('');
+    }
+    active.forEach((item) => {
+      const card = this.hud.querySelector(`[data-powerup="${item.type}"]`);
+      if (!card) return;
+      card.querySelector('.powerup-time').textContent = `${Math.ceil(item.timeLeft)}s`;
+      card.querySelector('.powerup-timer-fill').style.width =
+        `${Math.max(0, item.timeLeft / item.duration * 100)}%`;
+    });
   }
 }
 
@@ -1845,6 +2766,7 @@ class ObstacleManager {
 class InputController {
   constructor(game) {
     this.game = game;
+    this.pointerStart = null;
     this.bindEvents();
   }
 
@@ -1857,6 +2779,10 @@ class InputController {
       }
 
       if (this.game.state !== 'PLAYING') return;
+
+      if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', ' '].includes(e.key)) {
+        e.preventDefault();
+      }
 
       switch (e.key) {
         case 'ArrowLeft':
@@ -1889,6 +2815,53 @@ class InputController {
           break;
       }
     });
+
+    const canvas = document.getElementById('game-canvas');
+    canvas.addEventListener('pointerdown', (event) => {
+      if (this.game.state !== 'PLAYING' || event.button !== 0) return;
+      event.preventDefault();
+      this.pointerStart = {
+        id: event.pointerId,
+        x: event.clientX,
+        y: event.clientY,
+        time: performance.now()
+      };
+      canvas.setPointerCapture(event.pointerId);
+    });
+
+    canvas.addEventListener('pointerup', (event) => {
+      if (!this.pointerStart || this.pointerStart.id !== event.pointerId) return;
+      const start = this.pointerStart;
+      this.pointerStart = null;
+      if (this.game.state !== 'PLAYING') return;
+
+      // Resolve exactly one dominant-axis action per pointer gesture.
+      const dx = event.clientX - start.x;
+      const dy = event.clientY - start.y;
+      const distance = Math.max(Math.abs(dx), Math.abs(dy));
+      const elapsed = performance.now() - start.time;
+      const threshold = elapsed <= CONFIG.SWIPE_FAST_DURATION_MS
+        ? CONFIG.SWIPE_FAST_DISTANCE_PX
+        : CONFIG.SWIPE_MIN_DISTANCE_PX;
+      if (distance < threshold) return;
+
+      if (Math.abs(dx) > Math.abs(dy)) {
+        if (dx < 0) this.game.player.moveLeft();
+        else this.game.player.moveRight();
+      } else if (dy < 0) {
+        if (this.game.player.jump()) this.game.audio.playJump();
+      } else if (this.game.player.slide()) {
+        this.game.audio.playSlide();
+      }
+    });
+
+    const cancelPointer = (event) => {
+      if (this.pointerStart && this.pointerStart.id === event.pointerId) {
+        this.pointerStart = null;
+      }
+    };
+    canvas.addEventListener('pointercancel', cancelPointer);
+    canvas.addEventListener('lostpointercapture', cancelPointer);
   }
 }
 
@@ -1970,9 +2943,14 @@ class GestureController {
       this.setGestureFeedback('✊', 'মুঠি করুন / MAKE A FIST');
 
       if (!this.isMediaPipeReady) {
+        this.game.showLoadingScreen('Loading hand tracking and requesting camera access...', 35);
         await this.initMediaPipe();
       } else if (this.camera) {
-        this.camera.start();
+        try {
+          await this.camera.start();
+        } catch (error) {
+          this.showCameraError(error);
+        }
       }
     } else {
       const wasPracticeMode = this.isPracticeMode;
@@ -2001,14 +2979,14 @@ class GestureController {
     this.handHint.textContent = '⏳ লোড হচ্ছে... (Loading...)';
     this.handHint.classList.add('visible');
 
-    if (typeof window.Hands === 'undefined') {
-      this.showCameraError(new Error('MediaPipe Hands library did not load.'));
+    if (typeof window.Hands === 'undefined' || typeof window.Camera === 'undefined') {
+      this.showCameraError(new Error('MediaPipe CDN library did not load.'));
       return;
     }
 
     try {
       this.hands = new window.Hands({
-        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${file}`
       });
 
       this.hands.setOptions({
@@ -2056,8 +3034,14 @@ class GestureController {
 
   showCameraError(error) {
     console.error('Camera/MediaPipe error:', error);
+    this.game.hideLoadingScreen();
     this.statusDot.className = 'camera-status-dot error';
-    this.handHint.textContent = '❌ ক্যামেরা চালু হয়নি। অনুমতি ও সংযোগ পরীক্ষা করুন / Check camera permission and connection.';
+    const secureOrigin = window.isSecureContext || location.hostname === 'localhost';
+    this.handHint.textContent = String(error && error.message || error).includes('CDN')
+      ? '❌ Hand tracking failed to load. Check your internet connection, then refresh the game.'
+      : secureOrigin
+        ? '❌ Camera unavailable. Allow camera access and check that no other app is using it.'
+        : '❌ Camera needs HTTPS. Open this deployed game over HTTPS, then allow camera access.';
     this.handHint.classList.add('visible');
   }
 
@@ -2104,6 +3088,7 @@ class GestureController {
   // MEDIAPIPE RESULT CALLBACK
   // ---------------------------------------------------------------
   onHandResults(results) {
+    this.game.hideLoadingScreen();
     const now = performance.now();
     this.fpsFrameCount++;
     if (now - this.fpsWindowStart >= 1000) {
@@ -2278,6 +3263,15 @@ class MetroRunnerDhaka {
     this.state = 'START'; // 'START' | 'PLAYING' | 'PAUSED' | 'GAMEOVER'
     this.cameraPerformanceMode = false;
     this.lastRenderTime = 0;
+    this.qualitySetting = 'AUTO';
+    this.autoQuality = this.isLowEndDevice() ? 'LOW' : 'HIGH';
+    this.qualitySampleStart = performance.now();
+    this.qualityFrameCount = 0;
+    this.lowFpsDuration = 0;
+    this.recoveryFpsDuration = 0;
+    this.crashSlowMoTime = 0;
+    this.crashCameraPosition = null;
+    this.preferredControlMode = 'touch';
 
     this.score = 0;
     this.coins = 0;
@@ -2294,13 +3288,19 @@ class MetroRunnerDhaka {
     this.initThree();
 
     this.player = new Player(this.scene);
-    this.world = new WorldManager(this.scene);
-    this.obstacles = new ObstacleManager(this.scene, this.audio);
+    this.world = new WorldManager(this.scene, this.camera, this.hemiLight, this.dirLight);
+    this.obstacles = new ObstacleManager(this.scene, this.audio, this);
+    this.powerUps = new PowerUpController(this, this.obstacles);
     this.input = new InputController(this);
     this.gesture = new GestureController(this);
 
     this.bindUI();
     this.updateHUD();
+
+    this.renderer.render(this.scene, this.camera);
+    document.getElementById('loading-progress').style.width = '100%';
+    document.getElementById('loading-message').textContent = 'Ready!';
+    requestAnimationFrame(() => this.hideLoadingScreen());
 
     // Start requestAnimationFrame render loop
     requestAnimationFrame((t) => this.loop(t));
@@ -2314,8 +3314,6 @@ class MetroRunnerDhaka {
       powerPreference: 'high-performance'
     });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2.0));
-    this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     // Scene & Dhaka Atmosphere Fog
@@ -2328,15 +3326,15 @@ class MetroRunnerDhaka {
       60,
       window.innerWidth / window.innerHeight,
       0.1,
-      350.0
+      600.0
     );
     this.cameraOffset = new THREE.Vector3(0, 3.8, -6.8); // Behind and slightly above runner
     this.cameraLookOffset = new THREE.Vector3(0, 1.8, 10.0);
 
     // Lighting (Warm tropical Dhaka sunlight)
-    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.75);
-    hemiLight.position.set(0, 50, 0);
-    this.scene.add(hemiLight);
+    this.hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.75);
+    this.hemiLight.position.set(0, 50, 0);
+    this.scene.add(this.hemiLight);
 
     this.dirLight = new THREE.DirectionalLight(0xfff7ed, 0.9);
     this.dirLight.position.set(25, 45, -20);
@@ -2351,23 +3349,104 @@ class MetroRunnerDhaka {
     this.dirLight.shadow.camera.bottom = -10;
     this.scene.add(this.dirLight);
     this.scene.add(this.dirLight.target);
+    this.applyQuality();
 
     // Window resize handler
     window.addEventListener('resize', () => this.onWindowResize());
+    window.addEventListener('orientationchange', () => this.onWindowResize());
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', () => this.onWindowResize());
+    }
   }
 
   onWindowResize() {
-    this.camera.aspect = window.innerWidth / window.innerHeight;
+    const width = document.documentElement.clientWidth || window.innerWidth;
+    const height = document.documentElement.clientHeight || window.innerHeight;
+    this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
-    this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.renderer.setSize(width, height);
   }
 
   setCameraPerformanceMode(enabled) {
     if (this.cameraPerformanceMode === enabled) return;
     this.cameraPerformanceMode = enabled;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, enabled ? 1.0 : 2.0));
-    this.renderer.shadowMap.enabled = !enabled;
     document.body.classList.toggle('camera-performance-mode', enabled);
+    this.applyQuality();
+  }
+
+  isLowEndDevice() {
+    const memoryLimited = Number.isFinite(navigator.deviceMemory) && navigator.deviceMemory <= 4;
+    const cpuLimited = Number.isFinite(navigator.hardwareConcurrency) &&
+      navigator.hardwareConcurrency <= 4;
+    return memoryLimited || cpuLimited;
+  }
+
+  applyQuality() {
+    const quality = this.qualitySetting === 'AUTO' ? this.autoQuality : this.qualitySetting;
+    const isLow = quality === 'LOW';
+    const pixelRatioLimit = this.cameraPerformanceMode ? 1 : (isLow ? 1 : 2);
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, pixelRatioLimit));
+    this.renderer.shadowMap.enabled = !this.cameraPerformanceMode && !isLow &&
+      !window.matchMedia('(pointer: coarse)').matches;
+    this.dirLight.castShadow = this.renderer.shadowMap.enabled;
+    document.body.classList.toggle('quality-low', isLow);
+    document.getElementById('settings-quality').value = this.qualitySetting;
+  }
+
+  setQuality(quality) {
+    if (!['AUTO', 'LOW', 'HIGH'].includes(quality)) {
+      throw new Error(`Unsupported quality setting: ${quality}`);
+    }
+    this.qualitySetting = quality;
+    this.lowFpsDuration = 0;
+    this.recoveryFpsDuration = 0;
+    this.applyQuality();
+  }
+
+  trackAutoQuality(currentTime) {
+    if (this.qualitySetting !== 'AUTO' || this.cameraPerformanceMode) {
+      this.qualitySampleStart = currentTime;
+      this.qualityFrameCount = 0;
+      return;
+    }
+    this.qualityFrameCount++;
+    const elapsed = currentTime - this.qualitySampleStart;
+    if (elapsed > 1500) {
+      this.qualitySampleStart = currentTime;
+      this.qualityFrameCount = 0;
+      return;
+    }
+    if (elapsed < 1000) return;
+
+    const fps = this.qualityFrameCount * 1000 / elapsed;
+    if (fps < CONFIG.QUALITY_FPS_THRESHOLD) {
+      this.lowFpsDuration += elapsed / 1000;
+      this.recoveryFpsDuration = 0;
+    } else if (fps > CONFIG.QUALITY_FPS_RECOVERY_THRESHOLD) {
+      this.recoveryFpsDuration += elapsed / 1000;
+      this.lowFpsDuration = 0;
+    } else {
+      this.lowFpsDuration = 0;
+      this.recoveryFpsDuration = 0;
+    }
+
+    if (this.autoQuality === 'HIGH' &&
+        this.lowFpsDuration >= CONFIG.QUALITY_FPS_DROP_SECONDS) {
+      this.autoQuality = 'LOW';
+      this.applyQuality();
+    } else if (this.autoQuality === 'LOW' &&
+        this.recoveryFpsDuration >= CONFIG.QUALITY_FPS_RECOVERY_SECONDS) {
+      this.autoQuality = 'HIGH';
+      this.applyQuality();
+    }
+    this.qualitySampleStart = currentTime;
+    this.qualityFrameCount = 0;
+  }
+
+  triggerHaptic(pattern) {
+    if (CONFIG.HAPTICS_ENABLED && typeof navigator.vibrate === 'function') {
+      navigator.vibrate(pattern);
+    }
   }
 
   bindUI() {
@@ -2401,11 +3480,61 @@ class MetroRunnerDhaka {
     document.getElementById('btn-sound-toggle').addEventListener('click', (e) => {
       const isMuted = this.audio.toggleMute();
       e.target.textContent = isMuted ? '🔇' : '🔊';
+      document.getElementById('settings-sound').checked = !isMuted;
+    });
+
+    document.getElementById('btn-settings-toggle').addEventListener('click', () => {
+      document.getElementById('settings-screen').classList.remove('hidden');
+    });
+    document.getElementById('btn-settings-close').addEventListener('click', () => {
+      document.getElementById('settings-screen').classList.add('hidden');
+    });
+    document.getElementById('settings-screen').addEventListener('click', (event) => {
+      if (event.target.id === 'settings-screen') {
+        document.getElementById('settings-screen').classList.add('hidden');
+      }
+    });
+    document.getElementById('settings-quality').addEventListener('change', (event) => {
+      this.setQuality(event.target.value);
+    });
+    document.getElementById('settings-control-mode').addEventListener('change', (event) => {
+      this.preferredControlMode = event.target.value;
+      document.getElementById('settings-control-note').textContent =
+        `Preferred input: ${event.target.options[event.target.selectedIndex].text}. Keyboard, touch and camera controls remain available.`;
+    });
+    document.getElementById('settings-sound').addEventListener('change', (event) => {
+      if (this.audio.isMuted !== !event.target.checked) {
+        const isMuted = this.audio.toggleMute();
+        document.getElementById('btn-sound-toggle').textContent = isMuted ? '🔇' : '🔊';
+      }
+    });
+    document.getElementById('btn-share-score').addEventListener('click', () => {
+      this.shareScore();
     });
 
     document.getElementById('btn-pause-toggle').addEventListener('click', () => {
       this.togglePause();
     });
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden && this.state === 'PLAYING') {
+        this.state = 'PAUSED';
+        document.getElementById('pause-screen').classList.remove('hidden');
+      } else if (!document.hidden) {
+        this.lastTime = performance.now();
+      }
+    });
+  }
+
+  showLoadingScreen(message, progress) {
+    const screen = document.getElementById('loading-screen');
+    screen.classList.remove('hidden');
+    document.getElementById('loading-message').textContent = message;
+    document.getElementById('loading-progress').style.width = `${progress}%`;
+  }
+
+  hideLoadingScreen() {
+    document.getElementById('loading-screen').classList.add('hidden');
   }
 
   startGame() {
@@ -2433,7 +3562,11 @@ class MetroRunnerDhaka {
   }
 
   triggerGameOver(reason) {
-    this.state = 'GAMEOVER';
+    if (this.state === 'CRASHING' || this.state === 'GAMEOVER') return;
+    this.state = 'CRASHING';
+    this.crashSlowMoTime = CONFIG.GAMEOVER_SLOWMO_SECONDS;
+    this.crashCameraPosition = this.camera.position.clone();
+    this.triggerHaptic(CONFIG.HAPTIC_CRASH_PATTERN);
     this.audio.playCrash();
 
     // Check High Score
@@ -2448,8 +3581,9 @@ class MetroRunnerDhaka {
     document.getElementById('go-best').textContent = Math.floor(this.bestScore).toLocaleString();
     document.getElementById('go-coins').textContent = this.coins.toLocaleString();
     document.getElementById('go-distance').textContent = `${Math.floor(this.distance)} m`;
+    document.getElementById('go-powerups').textContent = this.powerUps.collected.toLocaleString();
 
-    document.getElementById('gameover-screen').classList.remove('hidden');
+    document.getElementById('gameover-screen').classList.add('hidden');
   }
 
   restartGame() {
@@ -2461,6 +3595,7 @@ class MetroRunnerDhaka {
     this.player.reset();
     this.world.reset();
     this.obstacles.reset();
+    this.powerUps.reset();
 
     document.getElementById('gameover-screen').classList.add('hidden');
     document.getElementById('pause-screen').classList.add('hidden');
@@ -2474,8 +3609,63 @@ class MetroRunnerDhaka {
 
   onCoinCollected() {
     this.coins++;
-    this.score += CONFIG.COIN_POINTS;
+    this.score += CONFIG.COIN_POINTS * this.powerUps.getScoreMultiplier();
+    this.triggerHaptic(CONFIG.HAPTIC_COIN_MS);
     this.updateHUD();
+  }
+
+  async shareScore() {
+    const scoreText =
+      `I scored ${Math.floor(this.score).toLocaleString()} in Metro Runner Dhaka, collected ${this.coins} coins, and ran ${Math.floor(this.distance)} m!`;
+    const shareData = { title: 'Metro Runner Dhaka', text: scoreText, url: window.location.href };
+    const status = document.getElementById('share-status');
+    status.textContent = '';
+
+    if (typeof navigator.share === 'function') {
+      try {
+        await navigator.share(shareData);
+        status.textContent = 'Score shared!';
+        return;
+      } catch (error) {
+        if (error && typeof error === 'object' && error.name === 'AbortError') return;
+        status.textContent = 'Sharing failed. You can copy the game link from your browser.';
+        return;
+      }
+    }
+
+    const copyText = `${scoreText} ${shareData.url}`;
+    try {
+      if (!navigator.clipboard || !window.isSecureContext) {
+        throw new Error('Clipboard API unavailable.');
+      }
+      await navigator.clipboard.writeText(copyText);
+      status.textContent = 'Score copied to clipboard!';
+    } catch (error) {
+      if (this.copyToClipboard(copyText)) {
+        status.textContent = 'Score copied to clipboard!';
+      } else {
+        status.textContent = 'Could not copy the score. Please copy the page URL manually.';
+      }
+    }
+  }
+
+  copyToClipboard(text) {
+    if (typeof document.execCommand !== 'function') return false;
+    const field = document.createElement('textarea');
+    field.value = text;
+    field.setAttribute('readonly', '');
+    field.style.position = 'fixed';
+    field.style.opacity = '0';
+    document.body.appendChild(field);
+    field.select();
+    let copied = false;
+    try {
+      copied = document.execCommand('copy');
+    } catch (error) {
+      copied = false;
+    }
+    field.remove();
+    return copied;
   }
 
   onStationReached(station) {
@@ -2494,7 +3684,10 @@ class MetroRunnerDhaka {
     document.getElementById('hud-coins').textContent = this.coins;
     document.getElementById('hud-distance').textContent = `${Math.floor(this.distance)} m`;
     
-    const kmh = Math.floor(this.speed * 3.6);
+    const actualSpeed = this.powerUps
+      ? this.speed * this.powerUps.getSpeedMultiplier()
+      : this.speed;
+    const kmh = Math.floor(actualSpeed * 3.6);
     document.getElementById('hud-speed').textContent = `${kmh} km/h`;
   }
 
@@ -2512,6 +3705,26 @@ class MetroRunnerDhaka {
     // Clamp dt to avoid physics spiral when tab is switched
     if (dt > 0.1) dt = 0.1;
 
+    if (this.state === 'CRASHING') {
+      this.crashSlowMoTime = Math.max(0, this.crashSlowMoTime - dt);
+      const progress = 1 - this.crashSlowMoTime / CONFIG.GAMEOVER_SLOWMO_SECONDS;
+      this.player.mesh.rotation.x = -0.45 * Math.sin(progress * Math.PI);
+      const shake = this.crashSlowMoTime * 0.5;
+      this.camera.position.x = this.crashCameraPosition.x +
+        Math.sin(currentTime * 0.055) * shake;
+      this.camera.position.y = this.crashCameraPosition.y +
+        Math.cos(currentTime * 0.07) * shake;
+      if (this.crashSlowMoTime === 0) {
+        this.state = 'GAMEOVER';
+        document.getElementById('gameover-screen').classList.remove('hidden');
+      }
+      if (!this.cameraPerformanceMode || currentTime - this.lastRenderTime >= 1000 / 30) {
+        this.renderer.render(this.scene, this.camera);
+        this.lastRenderTime = currentTime;
+      }
+      return;
+    }
+
     if (this.state !== 'PLAYING') return;
 
     if (this.state === 'PLAYING') {
@@ -2520,25 +3733,32 @@ class MetroRunnerDhaka {
         this.speed += this.speed * CONFIG.SPEED_ACCELERATION * dt;
       }
 
+      this.powerUps.update(dt, this.distance, this.speed * this.powerUps.getSpeedMultiplier());
+      const runSpeed = this.speed * this.powerUps.getSpeedMultiplier();
+
       // 2. Continuous Distance & Score Increment
-      const forwardDelta = this.speed * dt;
+      const forwardDelta = runSpeed * dt;
       this.distance += forwardDelta;
-      this.score += forwardDelta * CONFIG.DISTANCE_SCORE_MULTIPLIER;
+      const dashBonus = this.powerUps.activeMajor && this.powerUps.activeMajor.type === 'DASH'
+        ? CONFIG.POWERUPS.DASH_SCORE_BONUS
+        : 0;
+      this.score += forwardDelta *
+        (CONFIG.DISTANCE_SCORE_MULTIPLIER * this.powerUps.getScoreMultiplier() + dashBonus);
       this.updateHUD();
 
       // 3. Update Player Mechanics
       const playerZ = this.distance;
       this.player.mesh.position.z = playerZ;
-      this.player.update(dt, this.speed, playerZ);
+      this.player.update(dt, runSpeed, playerZ);
 
       // 4. Update World Segments & Environment
-      this.world.update(playerZ);
+      this.world.update(playerZ, dt, runSpeed);
 
       // 5. Update Obstacles, Trains & Coins
       this.obstacles.update(
         dt,
         playerZ,
-        this.speed,
+        runSpeed,
         this.world,
         (st) => this.onStationReached(st)
       );
@@ -2547,19 +3767,27 @@ class MetroRunnerDhaka {
       this.obstacles.checkCollisions(
         this.player,
         () => this.onCoinCollected(),
-        (reason) => this.triggerGameOver(reason)
+        (reason, obstacle) => {
+          if (!this.powerUps.absorbHit(obstacle)) this.triggerGameOver(reason);
+        },
+        (type) => this.powerUps.activate(type)
       );
 
       // 7. Third-Person Chase Camera Follow
       this.camera.position.x = this.player.mesh.position.x * 0.7;
-      this.camera.position.y = this.player.mesh.position.y * 0.4 + this.cameraOffset.y;
+      this.camera.position.y = this.player.mesh.position.y * 0.4 + this.cameraOffset.y +
+        (this.player.isFlying ? 2.2 : 0);
       this.camera.position.z = playerZ + this.cameraOffset.z;
 
       this.camera.lookAt(
         this.player.mesh.position.x * 0.4,
-        this.player.mesh.position.y * 0.3 + this.cameraLookOffset.y,
+        this.player.mesh.position.y * 0.3 + this.cameraLookOffset.y +
+          (this.player.isFlying ? 1.8 : 0),
         playerZ + this.cameraLookOffset.z
       );
+      const targetFov = 60 + (this.powerUps.getSpeedMultiplier() - 1) * 10;
+      this.camera.fov += (targetFov - this.camera.fov) * Math.min(1, dt * 2.5);
+      this.camera.updateProjectionMatrix();
 
       // Directional Sun Light follows camera frustum
       this.dirLight.position.set(25, 45, playerZ - 20);
@@ -2569,6 +3797,7 @@ class MetroRunnerDhaka {
     }
 
     // Render 3D Scene
+    this.trackAutoQuality(currentTime);
     if (!this.cameraPerformanceMode || currentTime - this.lastRenderTime >= 1000 / 30) {
       this.renderer.render(this.scene, this.camera);
       this.lastRenderTime = currentTime;
@@ -2581,5 +3810,22 @@ class MetroRunnerDhaka {
 // 10. INITIALIZATION
 // ===================================================================
 window.addEventListener('DOMContentLoaded', () => {
-  window.game = new MetroRunnerDhaka();
+  if (typeof window.THREE === 'undefined') {
+    document.getElementById('loading-message').textContent = 'The game could not start.';
+    document.getElementById('loading-error').hidden = false;
+    document.getElementById('loading-error').textContent =
+      'Three.js failed to load. Check your internet connection or CDN access, then refresh the page.';
+    document.getElementById('loading-progress').classList.add('loading-progress-error');
+    return;
+  }
+  try {
+    window.game = new MetroRunnerDhaka();
+  } catch (error) {
+    console.error('Game startup failed:', error);
+    document.getElementById('loading-message').textContent = 'The game could not start.';
+    document.getElementById('loading-error').hidden = false;
+    document.getElementById('loading-error').textContent =
+      'WebGL or a required browser feature is unavailable. Try a current browser with hardware acceleration enabled.';
+    document.getElementById('loading-progress').classList.add('loading-progress-error');
+  }
 });
