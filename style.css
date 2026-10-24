@@ -295,33 +295,6 @@ body {
   opacity: 1;
 }
 
-.train-warning-banner {
-  position: absolute;
-  top: 148px;
-  left: 50%;
-  z-index: 16;
-  max-width: calc(100vw - 24px);
-  padding: 9px 16px;
-  border: 1px solid rgba(248, 113, 113, 0.85);
-  border-radius: 12px;
-  background: rgba(127, 29, 29, 0.9);
-  color: #fff;
-  font-size: 13px;
-  font-weight: 900;
-  letter-spacing: 0.4px;
-  text-align: center;
-  opacity: 0;
-  pointer-events: none;
-  transform: translate(-50%, -8px);
-  transition: opacity 0.18s ease, transform 0.18s ease;
-}
-
-.train-warning-banner.show {
-  opacity: 1;
-  transform: translate(-50%, 0);
-  animation: train-warning-pulse 0.65s ease-in-out infinite alternate;
-}
-
 #powerup-hud {
   position: absolute;
   left: 50%;
@@ -412,11 +385,6 @@ body {
   width: 100%;
   background: var(--powerup-color);
   transition: width 0.1s linear;
-}
-
-@keyframes train-warning-pulse {
-  from { box-shadow: 0 0 8px rgba(248, 113, 113, 0.25); }
-  to { box-shadow: 0 0 22px rgba(248, 113, 113, 0.75); }
 }
 
 .station-badge {
@@ -909,12 +877,6 @@ body.practice-mode #camera-panel {
     top: calc(env(safe-area-inset-top) + 110px);
     max-width: calc(100vw - 24px);
     padding: 8px 14px;
-  }
-
-  .train-warning-banner {
-    top: calc(env(safe-area-inset-top) + 148px);
-    font-size: 11px;
-    padding: 7px 10px;
   }
 
   .station-name-bn {
